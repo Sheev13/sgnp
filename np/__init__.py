@@ -1,0 +1,1 @@
+from .gnp import ConvGNP

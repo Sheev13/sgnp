@@ -5,6 +5,7 @@ from networks.set_architectures import DeepSet, TrAgDeepSet, ConvDeepSet, Transf
 from networks.base_architectures import MLP
 from .likelihoods import GaussianLikelihood
 from .covariance_functions import Periodic, Tetouan
+from .np import ConvGNP
 
 from typing import List, Optional
 
@@ -183,7 +184,8 @@ class SparseGaussianNeuralProcess(BaseSVGP):
                  cnn_kernel_size: int = 5,
                  nonlinearity: nn.Module = nn.ReLU(),
                  grid_spacing: float = 1e-2,
-                 learn_cds_l: bool = True,
+                 init_cds_ls_multiplier: int = 2,
+                 learn_cds_ls: bool = True,
                  d_k: int = 16,
                  use_unet: bool = False,
                  use_transformer: bool = False,
@@ -193,12 +195,24 @@ class SparseGaussianNeuralProcess(BaseSVGP):
                  sigma_y_tilde: Optional[float] = None,
                  const: Optional[float] = None,
                  train_sigma_y_tilde: bool = False,
+                 tetouan_grid_spacing: Optional[List[float]] = None,
                  **svgp_kwargs
                 ):
         super().__init__(x_dim=x_dim, **svgp_kwargs)
-        self.grid_spacing = grid_spacing
-        self.log_query_l = nn.Parameter(torch.log(torch.tensor(5 * grid_spacing)),
-                                        requires_grad=learn_cds_l)
+
+        if not self.use_titsias:
+            # this ConvGNP is just a wrapper for ConvDeepSets g and h
+            self.convgnp = ConvGNP(x_dim=x_dim,
+                                   cnn_hidden_chans=cnn_hidden_chans,
+                                   cnn_kernel_size=cnn_kernel_size,
+                                   nonlinearity=nonlinearity,
+                                   grid_spacing=grid_spacing,
+                                   init_ls_multiplier=init_cds_ls_multiplier,
+                                   learn_ls=learn_cds_ls,
+                                   d_k=d_k,
+                                   use_unet=use_unet,
+                                   tetouan_grid_spacing=tetouan_grid_spacing,
+                                  )
         
         if use_transformer:
             self.f = TrAgTransformer(x_dim=x_dim,
@@ -215,33 +229,6 @@ class SparseGaussianNeuralProcess(BaseSVGP):
                                      nonlinearity=nonlinearity,
                                      scale_agnostic=False,
                                     )
-
-        chans = [2] + cnn_hidden_chans
-
-        self.g = ConvDeepSet(x_dim=x_dim,
-                            grid_spacing=grid_spacing,
-                            cnn_chans=chans+[1],
-                            cnn_kernel_size=cnn_kernel_size,
-                            learn_l=learn_cds_l,
-                            nonlinearity=nonlinearity,
-                            use_unet=use_unet,
-                            )
-        self.h_k = ConvDeepSet(x_dim=x_dim,
-                            grid_spacing=grid_spacing,
-                            cnn_chans=chans+[d_k],
-                            cnn_kernel_size=cnn_kernel_size,
-                            learn_l=learn_cds_l,
-                            nonlinearity=nonlinearity,
-                            use_unet=use_unet,
-                            )
-        self.h_v = ConvDeepSet(x_dim=x_dim,
-                            grid_spacing=grid_spacing,
-                            cnn_chans=chans+[1],
-                            cnn_kernel_size=cnn_kernel_size,
-                            learn_l=learn_cds_l,
-                            nonlinearity=nonlinearity,
-                            use_unet=use_unet,
-                            )
         
         self.hypers_net = None
 
@@ -285,16 +272,9 @@ class SparseGaussianNeuralProcess(BaseSVGP):
                                               scale_agnostic=True,
                                              )
 
-        
-        self.min_gridpoints = 1
-        if use_unet:
-            self.min_gridpoints = cnn_kernel_size * 2**self.f.rho.unet_depth
-
-        self.log_kvv_l = nn.Parameter(torch.tensor(1.0).log(), requires_grad=True)
-
         if self.use_titsias and not isinstance(self.likelihood, GaussianLikelihood): # i.e. s-ConvSGNP since non-Gaussian likelihood
             if sigma_y_tilde is None:
-                raise ValueError("User must specify a suitable (pseudo) sigma_y for the s-ConvSGNP.")
+                raise ValueError("User must specify a suitable sigma_y_tilde for the s-ConvSGNP.")
             else:
                 self.log_sigma_y_tilde = nn.Parameter(torch.tensor(sigma_y_tilde).log(), requires_grad=train_sigma_y_tilde)
             if const is None:
@@ -310,16 +290,8 @@ class SparseGaussianNeuralProcess(BaseSVGP):
     @property
     def sigma_y_tilde(self):
         if self.log_sigma_y_tilde is None:
-            raise ValueError("s-ConvSGNP's pseudo sigma_y is trying to be accessed when s-ConvSGNP is not in use.")
+            raise ValueError("s-ConvSGNP's sigma_y_tilde is trying to be accessed when s-ConvSGNP is not in use.")
         return self.log_sigma_y_tilde.exp()
-
-    @property
-    def query_l(self):
-        return self.log_query_l.exp()
-    
-    @property
-    def kvv_l(self):
-        return self.log_kvv_l.exp()
     
     def _set_meta_hypers(self, X_c, y_c):
 
@@ -354,17 +326,8 @@ class SparseGaussianNeuralProcess(BaseSVGP):
             m, S = self.optimal_inducing_variables(Z, X_c, y_c)
 
         else: # ConvSGNP and s-ConvSGNP
-            t = self._construct_grid(X_c, Z)
-            m_encoding = self.g(X_c, y_c, t)
-            m = self._query_encoding(m_encoding, Z, t).squeeze()
-            # kvv covariance parameterisation (see Markou et al 2021)
-            S_k_encoding = self.h_k(X_c, y_c, t)
-            S_v_encoding = self.h_v(X_c, y_c, t)
-            S_k = self._query_encoding(S_k_encoding, Z, t) / self.kvv_l
-            S_v = self._query_encoding(S_v_encoding, Z, t)
-            K_kk = torch.exp(-0.5 * torch.cdist(S_k, S_k).square())
-            vv = torch.outer(S_v.squeeze(), S_v.squeeze())
-            S = K_kk * vv + torch.eye(self.num_inducing) * 1e-3
+            q_u = self.convgnp(X_c, y_c, Z)
+            m, S = q_u.mean, q_u.covariance_matrix
 
             if self.use_titsias: # i.e. s-ConvSGNP since non-Gaussian likelihood
                 if self.sigma_y_tilde is None:
@@ -378,51 +341,3 @@ class SparseGaussianNeuralProcess(BaseSVGP):
                 S = torch.lerp(S_est, S, weight=0.1)
 
         return Z, m, S
-
-    def _construct_grid(self, X_c, Z):
-        """a function to generate a hypercubic grid of evenly spaced inputs that span the domain of X_c AND Z"""
-        # get min and max of union of X_c and Z
-        union = torch.cat((X_c, Z), dim=0)
-        t_min, t_max = union.min(dim=0)[0], union.max(dim=0)[0]
-        # widen the span to avoid edge effects in convolutions later on
-        t_min, t_max = t_min - 0.1, t_max + 0.1
-        # handle variable shapes
-        if len(t_min.shape) == 0: # occurs if each point in X_c and Z is 1 dimensional
-            t_min, t_max = t_min.unsqueeze(0), t_max.unsqueeze(0)
-
-        # if x's are d-dimensional, the below generates a d-dimensional image of d-dimensional
-        # coordinates, i.e. if x_dim is 2, grid is shape (grid_width, grid_height, 2)
-        aranges = [torch.arange(t_min[i].item(), t_max[i].item(), self.grid_spacing) for i in range(len(t_max))]
-        grid = torch.cat([t.unsqueeze(-1) for t in torch.meshgrid(*aranges)], dim=-1)
-        grid = self._pad_grid_if_needed(grid)
-        return grid # has shape (grid_dim_1, ..., grid_dim_x_dim, x_dim)
-    
-    def _pad_grid_if_needed(self, grid: torch.Tensor):
-        # grid expected to have shape (grid_dim_1, ..., grid_dim_x_dim, x_dim)
-        if any([gridpoints < self.min_gridpoints for gridpoints in grid.shape]):
-            grid = grid.permute(-1, *range(len(grid.shape)-1)) # bring last dimension to first position
-            pad = []
-            for i in range(1, len(grid.shape)):
-                if grid.shape[i] < self.min_gridpoints:
-                    diff = self.min_gridpoints - grid.shape[i]
-                    if diff % 2 == 0: # if difference is even:
-                        pad += [diff//2, diff//2]
-                    else: # if difference is odd:
-                        pad += [diff//2 + 1, diff//2]
-                else:
-                    pad += [0, 0]
-            pad = tuple(pad[::-1])
-            grid = F.pad(grid, pad)
-            return grid.permute(*range(1, len(grid.shape)), 0) # return first dimension to back position
-        else:
-            return grid
-
-    def _query_encoding(self, grid_enc, Z, t):
-        # grid_enc is shape (grid_dim_1, ..., grid_dim_x_dim, cnn_out)
-        # Z is shape (num_inducing, x_dim)
-        # t is shape (grid_dim_1, ..., grid_dim_x_dim, x_dim)
-        t = t.reshape((-1, self.x_dim)) # shape (total_gridpoints, x_dim)
-        grid_enc = grid_enc.reshape((t.shape[0], -1)) # shape (total_gridpoints, cnn_out)
-        dists = torch.cdist(Z / self.query_l, t / self.query_l) # shape (num_inducing, total_gridpoints)
-        bases = torch.exp(-0.5 * dists)
-        return (grid_enc.unsqueeze(0) * bases.unsqueeze(-1)).sum(1) # shape (num_inducing, cnn_out)

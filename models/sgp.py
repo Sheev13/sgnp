@@ -77,12 +77,15 @@ class BaseSVGP(nn.Module):
             f_covar = Knn - (A @ (Kmm - S) @ A.T)
             return torch.distributions.MultivariateNormal(f_mu, f_covar)
         
-    def forward(self, X_t: torch.Tensor, X_c: torch.Tensor, y_c: torch.Tensor, multivariate=False):
+    def forward(self, X_t: torch.Tensor, X_c: torch.Tensor, y_c: torch.Tensor, multivariate=False, qf=False):
         """Computes the posterior predictive in a single forward pass"""
         if self.use_titsias and not isinstance(self.likelihood, GaussianLikelihood) and not self.meta:
             raise ValueError("Cannot use Titsias shortcut for non-Gaussian likelihood in the standard SVGP.")
         Z, m, S = self._get_variational_parameters(X_c, y_c)
-        return self.likelihood.posterior_predictive(self.q_fn(X_t, Z, m, S, multivariate=multivariate))
+        if qf: # posterior over latent function rather than y
+            return self.q_fn(X_t, Z, m, S, multivariate=multivariate)
+        else:
+            return self.likelihood.posterior_predictive(self.q_fn(X_t, Z, m, S, multivariate=multivariate))
     
     def loss(self, X_c, y_c, X_t, y_t, num_samples=1, use_kl=True):
         """Monte Carlo estimate of ELBO defined on context dataset"""

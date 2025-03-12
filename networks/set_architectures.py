@@ -17,10 +17,13 @@ class DeepSet(nn.Module):
         # aggregation function:
         self.rho = lambda Phi: Phi.nanmean(dim=0)
 
-    def forward(self, X_c, y_c):
+    def forward(self, X_c, y_c, flat_representation=False):
         D_c = torch.cat((X_c, y_c), dim=-1) # shape (batch_size, input_dim)
         Phi = self.phi(D_c) # shape (batch_size, output_dim)
-        raw_output = self.rho(Phi).reshape((-1, X_c.shape[-1])) # shape (output_dim, x_dim)
+        if flat_representation:
+            raw_output = self.rho(Phi) # shape (output_dim,)
+        else:
+            raw_output = self.rho(Phi).reshape((-1, X_c.shape[-1])) # shape (output_dim, x_dim)
 
         return raw_output
     

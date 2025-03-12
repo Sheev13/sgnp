@@ -299,3 +299,57 @@ class ConvCNP(nn.Module):
             }
                 
             return - ll, metrics
+    
+class CNP(nn.Module):
+    def __init__(self,
+                 x_dim: int = None,
+                 deepset_dims: List[int]=[32, 32],
+                 decoder_dims: List[int]=[32, 32],
+                 nonlinearity: nn.Module = nn.ReLU(),
+                 classification: bool = False,
+                ):
+        super().__init__()
+        self.x_dim = x_dim
+        if deepset_dims[-1] != decoder_dims[0]:
+            raise ValueError("Final DeepSet layer dimension and decoding MLP first layer dimension must match.")
+
+        deepset_dims = [x_dim + 1] + deepset_dims # y_dim assumed to be 1
+        self.encoder = DeepSet(mlp_dims=deepset_dims,
+                                nonlinearity=nonlinearity,
+                                )
+        
+        decoder_dims[0] = decoder_dims[0] + x_dim
+        if classification:
+            decoder_dims += [1]
+        else:
+            decoder_dims += [2]
+        self.decoder = MLP(dims=decoder_dims, nonlinearity=nonlinearity)
+
+        self.classification = classification
+
+    def forward(self, X_c: torch.Tensor, y_c: torch.Tensor, X_t: torch.Tensor):
+        r = self.encoder(X_c, y_c, flat_representation=True) # shape (latent_dim,)
+
+        n_t = X_t.shape[0]
+        repeated_r = r.unsqueeze(0).repeat((n_t, 1)) # shape (n_t, latent_dim)
+        decoder_input = torch.cat((repeated_r, X_t), dim=-1) # shape (n_t, latent_dim + x_dim)
+
+        pred_params = self.decoder(decoder_input) # shape (n_t, 2) or (n_t, 1)
+
+        if self.classification:
+            logits = pred_params.squeeze()
+            return torch.distributions.Bernoulli(logits=logits)
+        else:
+            means, stds = pred_params[:,0], pred_params[:,1].exp()
+            return torch.distributions.Normal(means, stds)
+
+    def loss(self, X_c, y_c, X_t, y_t, **redundant_kwargs):
+            """Predictive log likelihood of targets given contexts"""
+            predictive = self(X_c, y_c, X_t)
+            ll = predictive.log_prob(y_t.squeeze(-1)).sum()
+
+            metrics = {
+                "ll": ll.detach().item(),
+            }
+                
+            return - ll, metrics

@@ -353,3 +353,90 @@ class CNP(nn.Module):
             }
                 
             return - ll, metrics
+
+class TNP(nn.Module):
+    def __init__(self,
+                 x_dim: int = None,
+                 num_layers: int = 2,
+                 r_dim: int = 64,
+                 nonlinearity: nn.Module = nn.ReLU(),
+                 classification: bool = False,
+                 non_diagonal: bool = False,
+                 num_heads: int = 8,
+                 d_k: int = 16,
+                ):
+        super().__init__()
+        self.x_dim = x_dim
+        self.r_dim = r_dim
+
+        self.tokeniser = MLP([x_dim + 1, r_dim, r_dim], nonlinearity=nonlinearity)
+
+        transformer_layer = nn.TransformerEncoderLayer(
+            d_model=r_dim,
+            nhead=num_heads,
+            dim_feedforward=num_heads,
+            dropout=0.0,
+            activation=nonlinearity,
+            batch_first=True,
+        )
+
+        self.transformer = nn.TransformerEncoder(
+            transformer_layer,
+            num_layers=num_layers,
+        )
+
+        if classification or non_diagonal:
+            out_dim = 1
+        else:
+            out_dim = 2
+
+        if non_diagonal:
+            self.covariance_encoder = nn.TransformerEncoder(
+                transformer_layer,
+                num_layers=1,
+            )
+            self.covariance_decoder = MLP([r_dim, r_dim, d_k])
+
+        self.decoder = MLP([r_dim, r_dim, out_dim], nonlinearity=nonlinearity)
+
+        self.classification = classification
+        self.non_diagonal = non_diagonal
+
+    def forward(self, X_c: torch.Tensor, y_c: torch.Tensor, X_t: torch.Tensor):
+        Z_c = torch.cat((X_c, y_c), dim=-1) # shape (n_c, x_dim+y_dim)
+        Z_t = torch.cat((X_t, torch.zeros((X_t.shape[0], 1))), dim=-1) # shape (n_t, x_dim+y_dim)
+        Z = torch.cat((Z_c, Z_t), dim=0) # shape (n_c+n_t, x_dim+y_dim)
+        n_c, n_t, n = Z_c.shape[0], Z_t.shape[0], Z.shape[0]
+
+        mask = torch.zeros((n, n)).fill_(float('-inf'))
+        mask[:,:n_c] = 0.0
+
+        Z = self.tokeniser(Z) # shape (n_c+n_t, r_dim)
+        Z = self.transformer(Z, mask=mask) # shape (n_c+n_t, r_dim)
+        y_t_params = self.decoder(Z[n_c:,:]) # # shape (n_t, 1) or (n_t, 2)
+
+        if self.classification:
+            logits = y_t_params.squeeze()
+            return torch.distributions.Bernoulli(logits=logits)
+        elif self.non_diagonal:
+            means = y_t_params.squeeze()
+            y_t_cov_params = self.covariance_decoder(self.covariance_encoder(Z[n_c:,:])) # shape (n_t, d_k)
+            L = (y_t_cov_params @ y_t_cov_params.T).tril() # lower triangular of shape (n_t, n_t)
+            return torch.distributions.MultivariateNormal(means, scale_tril=L)
+        else: # i.e. regression with diagonal Gaussian likelihood
+            means, stds = y_t_params[:,0], y_t_params[:,1].exp()
+            return torch.distributions.Normal(means, stds)
+
+    def loss(self, X_c, y_c, X_t, y_t, **redundant_kwargs):
+            """Predictive log likelihood of targets given contexts"""
+            predictive = self(X_c, y_c, X_t)
+            if self.classification or not self.non_diagonal:
+                ll = predictive.log_prob(y_t.squeeze(-1)).sum()
+            else: # i.e. if self.non_diagonal
+                ll = predictive.log_prob(y_t.squeeze(-1))
+
+            metrics = {
+                "ll": ll.detach().item(),
+            }
+                
+            return - ll, metrics

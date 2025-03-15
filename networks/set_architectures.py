@@ -120,7 +120,7 @@ class Transformer(nn.Module):
                 ):
         super().__init__()
 
-        self.tokenizer = MLP([x_dim+1, width])
+        self.tokeniser = MLP([x_dim+1, width])
         num_heads = 8
 
         if width % num_heads < (num_heads + 1 // 2) + 1:
@@ -146,7 +146,7 @@ class Transformer(nn.Module):
 
     def forward(self, X_c, y_c):
         D_c = torch.cat((X_c, y_c), dim=-1) # shape (batch_size, x_dim+1)
-        D_c_tokens = self.tokenizer(D_c) # shape (batch_size, width)
+        D_c_tokens = self.tokeniser(D_c) # shape (batch_size, width)
         # what we refer to here as batch_size, torch docs for 
         # TransformerEncoderLayer refer to as sequence length. We do not
         # have what they refer to as batch_size, so we unsqueeze instead

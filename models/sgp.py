@@ -70,8 +70,8 @@ class BaseSVGP(nn.Module):
 
         if not multivariate:
             Knn_diag = self.prior.covariance_function.diagonal(X_t)
-            f_vars = Knn_diag - torch.einsum('ij,jk,ki->i', [A, Kmm - S, A.T])#).clamp(min=1e-8)
-            return torch.distributions.Normal(f_mu, f_vars.sqrt())
+            f_vars = Knn_diag - torch.einsum('ij,jk,ki->i', [A, Kmm - S, A.T])
+            return torch.distributions.Normal(f_mu, f_vars.sqrt().clamp(min=1e-4))
         else:
             Knn = self.prior.covariance_function(X_t)
             f_covar = Knn - (A @ (Kmm - S) @ A.T)

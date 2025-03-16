@@ -101,6 +101,7 @@ def train_meta_model(
     
     # main training loop here.
     for training_step in pbar:
+        value_error_counter = 0
 
         if unfreeze_trainable_hypers_at_step is not None:
             if training_step == unfreeze_trainable_hypers_at_step:
@@ -132,7 +133,11 @@ def train_meta_model(
             if loss_function == 'npml':
                 loss, metrics = model.loss(X_c, y_c, X_t, y_t, num_samples=num_samples, use_kl=False)
             else:
-                loss, metrics = model.loss(X_c, y_c, X_t, y_t, num_samples=num_samples)
+                try:
+                    loss, metrics = model.loss(X_c, y_c, X_t, y_t, num_samples=num_samples)
+                except ValueError:
+                    print("Handled Value Error")
+                    loss, metrics = model.loss(X_c, y_c, X_t, y_t, num_samples=num_samples)
 
             batch_loss += loss / batch_size
             for key, value in metrics.items():

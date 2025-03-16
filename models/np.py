@@ -237,7 +237,7 @@ class ConvCNP(nn.Module):
             logits = pred_params.squeeze()
             return torch.distributions.Bernoulli(logits=logits)
         else:
-            means, stds = pred_params[:,0], pred_params[:,1].exp()
+            means, stds = pred_params[:,0], 0.02+0.98*nn.functional.softplus(pred_params[:,1])
             return torch.distributions.Normal(means, stds)
 
     def _construct_grid(self, X_c, X_t):
@@ -328,6 +328,8 @@ class CNP(nn.Module):
         self.classification = classification
 
     def forward(self, X_c: torch.Tensor, y_c: torch.Tensor, X_t: torch.Tensor):
+        if len(y_c.shape) < 2:
+            y_c = y_c.unsqueeze(-1)
         r = self.encoder(X_c, y_c, flat_representation=True) # shape (latent_dim,)
 
         n_t = X_t.shape[0]
@@ -340,7 +342,7 @@ class CNP(nn.Module):
             logits = pred_params.squeeze()
             return torch.distributions.Bernoulli(logits=logits)
         else:
-            means, stds = pred_params[:,0], pred_params[:,1].exp()
+            means, stds = pred_params[:,0], 0.02+0.98*nn.functional.softplus(pred_params[:,1])
             return torch.distributions.Normal(means, stds)
 
     def loss(self, X_c, y_c, X_t, y_t, **redundant_kwargs):
@@ -403,6 +405,9 @@ class TNP(nn.Module):
         self.non_diagonal = non_diagonal
 
     def forward(self, X_c: torch.Tensor, y_c: torch.Tensor, X_t: torch.Tensor):
+        if len(y_c.shape) < 2:
+            y_c = y_c.unsqueeze(-1)
+            
         Z_c = torch.cat((X_c, y_c), dim=-1) # shape (n_c, x_dim+y_dim)
         Z_t = torch.cat((X_t, torch.zeros((X_t.shape[0], 1))), dim=-1) # shape (n_t, x_dim+y_dim)
         Z = torch.cat((Z_c, Z_t), dim=0) # shape (n_c+n_t, x_dim+y_dim)
@@ -424,7 +429,7 @@ class TNP(nn.Module):
             L = (y_t_cov_params @ y_t_cov_params.T).tril() # lower triangular of shape (n_t, n_t)
             return torch.distributions.MultivariateNormal(means, scale_tril=L)
         else: # i.e. regression with diagonal Gaussian likelihood
-            means, stds = y_t_params[:,0], y_t_params[:,1].exp()
+            means, stds = y_t_params[:,0], 0.02+0.98*nn.functional.softplus(y_t_params[:,1])
             return torch.distributions.Normal(means, stds)
 
     def loss(self, X_c, y_c, X_t, y_t, **redundant_kwargs):

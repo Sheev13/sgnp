@@ -3,6 +3,7 @@ from torch import nn
 import sys
 sys.path.append("../")
 from .base_architectures import MLP, CNN, UNet
+from typing import Optional, List
 
 class DeepSet(nn.Module):
     def __init__(self, mlp_dims=None, nonlinearity=nn.ReLU()):
@@ -52,7 +53,8 @@ class ConvDeepSet(nn.Module):
                  nonlinearity=nn.ReLU(),
                  l_multiplier=2,
                  learn_l = True,
-                 use_unet: bool = False
+                 use_unet: bool = False,
+                 manual_l: Optional[List] = None,
                 ):
         super().__init__()
         if x_dim is None:
@@ -63,7 +65,11 @@ class ConvDeepSet(nn.Module):
             raise ValueError("'cnn_kernel_size' not specified for ConvDeepSet.")
         assert len(grid_spacing_list) == x_dim
         
-        l = l_multiplier * torch.tensor(grid_spacing_list)
+        if manual_l is None:
+            l = l_multiplier * torch.tensor(grid_spacing_list)
+        else:
+            assert len(manual_l) == x_dim
+            l = torch.tensor(manual_l)
         self.log_l = nn.Parameter(torch.log(l),
                                   requires_grad=learn_l)
         

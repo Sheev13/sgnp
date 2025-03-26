@@ -20,6 +20,9 @@ class ConvGNP(nn.Module):
                  use_unet: bool = False,
                  classification: bool = False,
                  tetouan_grid_spacing: Optional[List[float]] = None,
+                 manual_query_l: Optional[List] = None,
+                #  manual_kvv_l: Optional[List] = None,
+                 manual_cds_l: Optional[List] = None,
                 ):
         super().__init__()
         self.x_dim = x_dim
@@ -27,7 +30,13 @@ class ConvGNP(nn.Module):
             self.grid_spacing = tetouan_grid_spacing
         else:
             self.grid_spacing = [grid_spacing] * x_dim
-        self.log_query_l = nn.Parameter(torch.log(init_ls_multiplier * torch.tensor(self.grid_spacing)),
+
+        if manual_query_l is None:
+            self.log_query_l = nn.Parameter(torch.log(init_ls_multiplier * torch.tensor(self.grid_spacing)),
+                                        requires_grad=learn_ls)
+        else:
+            assert len(manual_query_l) == x_dim
+            self.log_query_l = nn.Parameter(torch.log(torch.tensor(manual_query_l)),
                                         requires_grad=learn_ls)
 
         chans = [2] + cnn_hidden_chans
@@ -41,6 +50,7 @@ class ConvGNP(nn.Module):
                             learn_l=learn_ls,
                             nonlinearity=nonlinearity,
                             use_unet=use_unet,
+                            manual_l=manual_cds_l,
                             )
         self.g = ConvDeepSet(x_dim=x_dim,
                             grid_spacing_list=self.grid_spacing,
@@ -50,6 +60,7 @@ class ConvGNP(nn.Module):
                             learn_l=learn_ls,
                             nonlinearity=nonlinearity,
                             use_unet=use_unet,
+                            manual_l=manual_cds_l,
                             )
         self.v = ConvDeepSet(x_dim=x_dim,
                             grid_spacing_list=self.grid_spacing,
@@ -59,13 +70,21 @@ class ConvGNP(nn.Module):
                             learn_l=learn_ls,
                             nonlinearity=nonlinearity,
                             use_unet=use_unet,
+                            manual_l=manual_cds_l,
                             )
         
         self.min_gridpoints = 1
         if use_unet:
             self.min_gridpoints = cnn_kernel_size * 2**self.f.rho.unet_depth
         
-        self.log_l =nn.Parameter(torch.tensor(grid_spacing * init_ls_multiplier).log(), requires_grad=True)
+        self.log_kvv_l =nn.Parameter(torch.tensor(1e-2).log(), requires_grad=True)
+        # if manual_kvv_l is None:
+        #     self.log_kvv_l = nn.Parameter(torch.log(init_ls_multiplier * torch.tensor(self.grid_spacing)),
+        #                                 requires_grad=learn_ls)
+        # else:
+        #     assert len(manual_kvv_l) == x_dim
+        #     self.log_query_l = nn.Parameter(torch.log(torch.tensor(manual_query_l)),
+        #                                 requires_grad=learn_ls)
 
         self.classification = classification
 
@@ -74,8 +93,8 @@ class ConvGNP(nn.Module):
         return self.log_query_l.exp()
     
     @property
-    def l(self):
-        return self.log_l.exp()
+    def kvv_l(self):
+        return self.log_kvv_l.exp()
 
     def forward(self, X_c: torch.Tensor, y_c: torch.Tensor, X_t: torch.Tensor):
         if len(X_c.shape) < 2:
@@ -93,7 +112,7 @@ class ConvGNP(nn.Module):
         # kvv covariance parameterisation (see Markou et al 2021)
         S_g_encoding = self.g(X_c, y_c, t)
         S_v_encoding = self.v(X_c, y_c, t)
-        S_g = self._query_encoding(S_g_encoding, X_t, t) / self.l
+        S_g = self._query_encoding(S_g_encoding, X_t, t) / self.kvv_l
         S_v = self._query_encoding(S_v_encoding, X_t, t)
         K_gg = torch.exp(-0.5 * torch.cdist(S_g, S_g).square())
         vv = torch.outer(S_v.squeeze(-1), S_v.squeeze(-1))
@@ -183,6 +202,8 @@ class ConvCNP(nn.Module):
                  use_unet: bool = False,
                  classification: bool = False,
                  tetouan_grid_spacing: Optional[List[float]] = None,
+                 manual_query_l: Optional[List] = None,
+                 manual_f_l: Optional[List] = None,
                 ):
         super().__init__()
         self.x_dim = x_dim
@@ -190,7 +211,13 @@ class ConvCNP(nn.Module):
             self.grid_spacing = tetouan_grid_spacing
         else:
             self.grid_spacing = [grid_spacing] * x_dim
-        self.log_query_l = nn.Parameter(torch.log(init_ls_multiplier * torch.tensor(self.grid_spacing)),
+
+        if manual_query_l is None:
+            self.log_query_l = nn.Parameter(torch.log(init_ls_multiplier * torch.tensor(self.grid_spacing)),
+                                        requires_grad=learn_ls)
+        else:
+            assert len(manual_query_l) == x_dim
+            self.log_query_l = nn.Parameter(torch.log(torch.tensor(manual_query_l)),
                                         requires_grad=learn_ls)
 
         chans = [2] + cnn_hidden_chans
@@ -208,6 +235,7 @@ class ConvCNP(nn.Module):
                             learn_l=learn_ls,
                             nonlinearity=nonlinearity,
                             use_unet=use_unet,
+                            manual_l=manual_f_l,
                             )
         
         self.min_gridpoints = 1

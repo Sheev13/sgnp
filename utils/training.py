@@ -39,9 +39,10 @@ def train_meta_model(
             print("No GPU found, falling back to CPU")
             device = torch.device('cpu')
         torch.set_default_device(device)
-        model.to(device)
+        torch.set_default_dtype(torch.float32)
+        model.to(device, dtype=torch.float32)
         print("Moving dataset to device...")
-        md = [(X.to(device=device), y.to(device=device)) for (X, y) in md]
+        md = [(X.to(device=device, dtype=torch.float32), y.to(device=device, dtype=torch.float32)) for (X, y) in md]
         print("Done.")
     else:
         device = torch.device('cpu')
@@ -101,7 +102,6 @@ def train_meta_model(
     
     # main training loop here.
     for training_step in pbar:
-        value_error_counter = 0
 
         if unfreeze_trainable_hypers_at_step is not None:
             if training_step == unfreeze_trainable_hypers_at_step:
@@ -180,8 +180,9 @@ def train_meta_model(
         print("Returning model and data to CPU.")
         cpu_device = torch.device('cpu')
         torch.set_default_device(cpu_device)
+        torch.set_default_dtype(torch.float64)
         model.to(cpu_device)
-        meta_dataset.to(cpu_device)
+        model.to(dtype=torch.float64)
 
     return tracker
 
@@ -244,9 +245,14 @@ def train_gp(
         # compute loss and gradients.
         optimiser.zero_grad()
         if svgp:
-            loss, metrics = model.loss(
-                X, y, X, y, num_samples=num_samples
-            )
+            try:
+                loss, metrics = model.loss(X, y, X, y, num_samples=num_samples)
+            except ValueError:
+                # print("Handled Value Error")
+                loss, metrics = model.loss(X, y, X, y, num_samples=num_samples)
+            # loss, metrics = model.loss(
+            #     X, y, X, y, num_samples=num_samples
+            # )
         else:
             loss, metrics = model.loss(
                 X,
